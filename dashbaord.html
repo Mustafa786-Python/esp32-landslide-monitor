@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#dff5ff">
+  <title>TerraGuard | Infrastructure Status</title>
+  <style>
+    :root {
+      --page: #dff5ff;
+      --ink: #172438;
+      --muted: #71829a;
+      --card: rgba(255,255,255,.94);
+      --line: #e5edf4;
+      --blue: #4b8cff;
+      --cyan: #5edbd5;
+      --shadow: 0 22px 55px rgba(43, 94, 133, .13);
+      --radius: 28px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      font: 15px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--page);
+      transition: background .7s ease;
+    }
+    body.red-zone { background: #ffd9df; animation: pagePulse 2.2s ease-in-out infinite; }
+    @keyframes pagePulse { 50% { background: #ffbec7; } }
+    button { font: inherit; cursor: pointer; border: 0; }
+    .shell { width: min(1240px, calc(100% - 40px)); margin: 0 auto; padding: 38px 0 54px; }
+    .topbar { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+    .kicker, .label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1, h2, p { margin: 0; }
+    h1 { margin-top: 6px; font-size: clamp(28px, 4vw, 43px); line-height: 1; letter-spacing: -.06em; }
+    .top-tools { display: flex; align-items: center; gap: 10px; }
+    .connection, .refresh {
+      display: flex; align-items: center; gap: 9px; min-height: 43px; padding: 0 15px;
+      color: var(--muted); background: var(--card); border: 1px solid rgba(255,255,255,.8);
+      border-radius: 999px; box-shadow: 0 10px 25px rgba(43,94,133,.08); font-size: 12px; font-weight: 700;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #f0af39; box-shadow: 0 0 0 4px #fff1d2; }
+    .dot.live { background: #35bf87; box-shadow: 0 0 0 4px #d9f8e8; }
+    .dot.error { background: #e95762; box-shadow: 0 0 0 4px #ffe2e5; }
+    .refresh { color: var(--ink); transition: transform .2s; }
+    .refresh:hover { transform: translateY(-2px); }
+    .dashboard { display: grid; grid-template-columns: 1.15fr .85fr; gap: 20px; }
+    .card { background: var(--card); border: 1px solid rgba(255,255,255,.9); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .hero {
+      position: relative; min-height: 327px; padding: 34px; overflow: hidden; color: white;
+      background: linear-gradient(130deg, #548cfb 0%, #7168e9 53%, #a45edc 100%);
+      transition: background .6s ease;
+    }
+    .hero.caution { background: linear-gradient(130deg, #f2a52e, #f17d43 55%, #ee5c4c); }
+    .hero.danger { background: linear-gradient(130deg, #e83e58, #bd2457 55%, #771c55); }
+    .hero:after { content: ""; position: absolute; width: 310px; height: 310px; right: -95px; bottom: -155px; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; box-shadow: 0 0 0 34px rgba(255,255,255,.06), 0 0 0 70px rgba(255,255,255,.045); }
+    .hero > * { position: relative; z-index: 1; }
+    .hero .label { color: rgba(255,255,255,.7); }
+    .hero h2 { max-width: 560px; margin-top: 28px; font-size: clamp(39px, 6vw, 70px); line-height: .93; letter-spacing: -.07em; }
+    .hero.danger h2 { font-size: clamp(36px, 5vw, 60px); }
+    .hero-copy { max-width: 390px; margin-top: 19px; color: rgba(255,255,255,.78); }
+    .hero-footer { position: absolute; right: 34px; bottom: 31px; left: 34px; display: flex; justify-content: space-between; align-items: end; gap: 20px; }
+    .state-pill { display: inline-flex; gap: 8px; align-items: center; padding: 9px 14px; color: #fff; background: rgba(255,255,255,.17); border: 1px solid rgba(255,255,255,.24); border-radius: 999px; font-size: 12px; font-weight: 800; }
+    .state-pill:before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .updated { color: rgba(255,255,255,.7); font-size: 11px; }
+    .average { padding: 31px; min-height: 327px; }
+    .average-head { display: flex; align-items: start; justify-content: space-between; }
+    .average h2 { margin-top: 14px; font-size: clamp(64px, 8vw, 95px); line-height: .9; letter-spacing: -.08em; }
+    .average h2 span { margin-left: 5px; color: var(--muted); font-size: 23px; letter-spacing: -.03em; }
+    .trend { padding: 8px 11px; color: #368e9c; background: #e3fbf6; border-radius: 999px; font-size: 11px; font-weight: 800; }
+    .segmented { display: grid; grid-template-columns: repeat(10, 1fr); gap: 5px; margin-top: 34px; }
+    .segment { height: 15px; background: #edf2f6; border-radius: 99px; transition: background .35s; }
+    .segment.filled { background: linear-gradient(90deg, #65d9d0, #578cff); }
+    .scale { display: flex; justify-content: space-between; margin-top: 10px; color: var(--muted); font-size: 10px; }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; grid-column: 1 / -1; }
+    .sensor, .hardware { min-height: 185px; padding: 24px; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 14px; color: #4a88ed; background: #eaf3ff; }
+    .icon svg { width: 20px; height: 20px; }
+    .metric-value { margin-top: 22px; font-size: 35px; font-weight: 850; letter-spacing: -.07em; }
+    .metric-value small { color: var(--muted); font-size: 15px; font-weight: 700; letter-spacing: 0; }
+    .bar { height: 10px; margin-top: 18px; overflow: hidden; background: #edf2f6; border-radius: 99px; }
+    .bar i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #63dacf, #568bfa); transition: width .5s ease; }
+    .sensor-note { margin-top: 9px; color: var(--muted); font-size: 11px; }
+    .hardware { display: flex; flex-direction: column; justify-content: space-between; }
+    .hardware .icon { color: #3dbb84; background: #e4f9ed; }
+    .gate { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .gate strong { font-size: 28px; letter-spacing: -.06em; }
+    .gate-badge { padding: 8px 12px; color: #279861; background: #e4f9ed; border-radius: 999px; font-size: 11px; font-weight: 850; }
+    .gate-badge.closed { color: #d9364d; background: #ffe4e8; }
+    .footer-note { margin-top: 22px; color: var(--muted); text-align: right; font-size: 11px; }
+    @media (max-width: 850px) {
+      .dashboard { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 24px, 1240px); padding-top: 24px; }
+      .topbar { align-items: start; flex-direction: column; gap: 16px; }
+      .top-tools { width: 100%; }
+      .connection { flex: 1; }
+      .hero, .average { padding: 25px; }
+      .hero { min-height: 330px; }
+      .hero-footer { right: 25px; bottom: 25px; left: 25px; }
+      .metrics { gap: 12px; }
+      .sensor, .hardware { padding: 18px; min-height: 170px; }
+      .metric-value { font-size: 29px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="kicker">TerraGuard / Field 01</div>
+        <h1>Infrastructure Status</h1>
+      </div>
+      <div class="top-tools">
+        <div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">Connecting to ESP32</span></div>
+        <button class="refresh" id="reconnectButton" type="button" aria-label="Reconnect WebSocket">↻&nbsp; Refresh</button>
+      </div>
+    </header>
+
+    <section class="dashboard" aria-live="polite">
+      <article class="card hero" id="heroCard">
+        <div class="label">Slope defense status</div>
+        <h2 id="stateTitle">All systems<br>normal</h2>
+        <p class="hero-copy" id="stateCopy">Soil moisture is within the safe operating range. Continue routine monitoring.</p>
+        <div class="hero-footer">
+          <span class="state-pill" id="statePill">NORMAL</span>
+          <span class="updated" id="lastUpdated">Awaiting telemetry</span>
+        </div>
+      </article>
+
+      <article class="card average">
+        <div class="average-head">
+          <div>
+            <div class="label">Average moisture</div>
+            <h2><span id="averageValue">35</span><span>%</span></h2>
+          </div>
+          <span class="trend">Live average</span>
+        </div>
+        <div class="segmented" id="segments" aria-label="Average moisture level"></div>
+        <div class="scale"><span>0%</span><span>40% safe</span><span>70% alert</span><span>100%</span></div>
+      </article>
+
+      <section class="metrics" aria-label="Sensor and hardware readings">
+        <article class="card sensor">
+          <div class="card-head"><span class="label">Lower slope</span><span class="icon">⌁</span></div>
+          <div class="metric-value"><span id="sensor1Value">30</span><small>%</small></div>
+          <div class="bar"><i id="sensor1Bar"></i></div>
+          <p class="sensor-note">Sensor 01 · Soil saturation</p>
+        </article>
+        <article class="card sensor">
+          <div class="card-head"><span class="label">Mid slope</span><span class="icon">⌁</span></div>
+          <div class="metric-value"><span id="sensor2Value">35</span><small>%</small></div>
+          <div class="bar"><i id="sensor2Bar"></i></div>
+          <p class="sensor-note">Sensor 02 · Soil saturation</p>
+        </article>
+        <article class="card sensor">
+          <div class="card-head"><span class="label">Upper slope</span><span class="icon">⌁</span></div>
+          <div class="metric-value"><span id="sensor3Value">40</span><small>%</small></div>
+          <div class="bar"><i id="sensor3Bar"></i></div>
+          <p class="sensor-note">Sensor 03 · Soil saturation</p>
+        </article>
+        <article class="card hardware">
+          <div class="card-head"><span class="label">Hardware status</span><span class="icon">⚙</span></div>
+          <div class="gate"><strong id="gateValue">OPEN</strong><span class="gate-badge" id="gateBadge">Ready</span></div>
+          <p class="sensor-note">Automated flood gates · Servo control</p>
+        </article>
+      </section>
+    </section>
+    <p class="footer-note">Telemetry updates automatically over a local WebSocket connection.</p>
+  </main>
+
+  <script>
+    const els = {
+      body: document.body,
+      hero: document.getElementById("heroCard"),
+      stateTitle: document.getElementById("stateTitle"),
+      stateCopy: document.getElementById("stateCopy"),
+      statePill: document.getElementById("statePill"),
+      average: document.getElementById("averageValue"),
+      segments: document.getElementById("segments"),
+      gate: document.getElementById("gateValue"),
+      gateBadge: document.getElementById("gateBadge"),
+      dot: document.getElementById("connectionDot"),
+      connection: document.getElementById("connectionText"),
+      updated: document.getElementById("lastUpdated")
+    };
+    const socketUrl = "ws://" + (window.location.hostname || "[ESP32-IP]") + "/ws";
+    let socket;
+    let reconnectTimer;
+
+    for (let i = 0; i < 10; i += 1) {
+      const segment = document.createElement("span");
+      segment.className = "segment";
+      els.segments.appendChild(segment);
+    }
+
+    function number(value) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
+    }
+
+    function render(data) {
+      const s1 = number(data.s1);
+      const s2 = number(data.s2);
+      const s3 = number(data.s3);
+      const avg = number(data.avg);
+      const isRed = avg > 70;
+      const isCaution = !isRed && (avg > 40 || s1 >= 40 || s2 >= 40 || s3 >= 40);
+      const state = isRed ? "RED ZONE - LOCKDOWN" : isCaution ? "CAUTION" : "NORMAL";
+      const stateClass = isRed ? "danger" : isCaution ? "caution" : "";
+
+      els.body.classList.toggle("red-zone", isRed);
+      els.hero.className = "card hero " + stateClass;
+      els.statePill.textContent = state;
+      els.average.textContent = Math.round(avg);
+      els.stateTitle.innerHTML = isRed ? "EVACUATE<br>IMMEDIATELY" : isCaution ? "Caution<br>detected" : "All systems<br>normal";
+      els.stateCopy.textContent = isRed
+        ? "Critical saturation detected. Evacuate the area and keep clear of the slope."
+        : isCaution
+          ? "Moisture is approaching an unsafe threshold. Increase observation frequency."
+          : "Soil moisture is within the safe operating range. Continue routine monitoring.";
+
+      [s1, s2, s3].forEach((value, index) => {
+        document.getElementById("sensor" + (index + 1) + "Value").textContent = Math.round(value);
+        document.getElementById("sensor" + (index + 1) + "Bar").style.width = value + "%";
+      });
+      Array.from(els.segments.children).forEach((segment, index) => {
+        segment.classList.toggle("filled", index < Math.ceil(avg / 10));
+      });
+      const gates = isRed ? "CLOSED" : String(data.gates || "OPEN").toUpperCase();
+      els.gate.textContent = gates;
+      els.gateBadge.textContent = gates === "CLOSED" ? "Locked" : "Ready";
+      els.gateBadge.classList.toggle("closed", gates === "CLOSED");
+      els.updated.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function setConnection(online, message) {
+      els.dot.className = "dot " + (online ? "live" : "error");
+      els.connection.textContent = message;
+    }
+
+    function connect() {
+      clearTimeout(reconnectTimer);
+      setConnection(false, "Connecting to ESP32");
+      try {
+        socket = new WebSocket(socketUrl);
+        socket.onopen = () => setConnection(true, "ESP32 connected");
+        socket.onmessage = event => {
+          try { render(JSON.parse(event.data)); }
+          catch (error) { console.warn("Invalid telemetry payload", error); }
+        };
+        socket.onerror = () => setConnection(false, "Connection unavailable");
+        socket.onclose = () => {
+          setConnection(false, "ESP32 offline");
+          reconnectTimer = setTimeout(connect, 4000);
+        };
+      } catch (error) {
+        setConnection(false, "Invalid WebSocket address");
+      }
+    }
+
+    document.getElementById("reconnectButton").addEventListener("click", connect);
+    render({ s1: 30, s2: 35, s3: 40, avg: 35, state: "NORMAL", gates: "OPEN" });
+    connect();
+
+    /* Local UI testing: uncomment to simulate NORMAL, CAUTION, and RED ZONE transitions.
+    setInterval(() => {
+      const avg = Math.round(25 + Math.random() * 65);
+      render({ s1: avg - 5, s2: avg, s3: avg + 4, avg, state: "", gates: avg > 70 ? "CLOSED" : "OPEN" });
+    }, 3500);
+    */
+  </script>
+</body>
+</html>
