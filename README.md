@@ -8,10 +8,10 @@ the `/ws` WebSocket endpoint.
 
 1. Install the Arduino libraries `AsyncTCP`, `ESPAsyncWebServer`, `ArduinoJson`, and
    `ESP32Servo`.
-2. Set `WIFI_SSID` and `WIFI_PASSWORD` in [`Code/Code.ino`](./Code/Code.ino).
+2. Set `WIFI_SSID` and `WIFI_PASSWORD` in [`main.ino`](./main.ino).
 3. Flash the sketch to an ESP32 and note the local IP printed by the serial monitor.
-4. Open that IP in a browser. The dashboard is embedded in the firmware and connects
-   to `ws://<device-ip>/ws` automatically.
+4. Open `http://<device-ip>/` in a browser. The firmware serves the complete
+   dashboard from `/`; it connects to `ws://<device-ip>/ws` automatically.
 
 The standalone dashboard can be opened directly from [`Dashboard.html`](./Dashboard.html).
 Use the settings button to enter the ESP32 IP address or a complete WebSocket URL;
@@ -24,12 +24,13 @@ Use the header mode selector to switch to **DEMO MODE** for a hardware-free
 presentation. Demo Mode is explicitly marked as a simulation and never reports
 simulated values as ESP32 telemetry. Use **START DEMO**, **PAUSE DEMO**, and
 **RESET DEMO** to control the 700 ms simulation timer. The scenario buttons show
-rising moisture, localized wetness, danger, and recovery; the three sliders allow
-manual sensor values from 0% to 100%. Demo state and gate decisions use the same
+rising moisture, localized wetness, one sensor at 40%, one sensor at 80%, danger,
+and recovery; the three sliders allow manual sensor values from 0% to 100%.
+Demo state and gate decisions use the same
 firmware rules as the live dashboard:
 
-- average `> 70`: `RED ZONE - LOCKDOWN`, gates `CLOSED`
-- average `> 40` or any sensor `>= 40`: `CAUTION`, gates `CLOSED`
+- average `>= 80` or any sensor `>= 80`: `RED ZONE`, gates `CLOSED`
+- average `> 40` or any sensor `>= 40`: `CAUTION`, gates `OPEN`
 - otherwise: `NORMAL`, gates `OPEN`
 
 Switching back to **LIVE MODE** stops the simulation, closes its demo data path,
@@ -43,13 +44,15 @@ and displays only messages received from the configured ESP32 WebSocket.
    connection loss, and marks telemetry stale after 2.5 seconds without a valid
    message.
 
-The firmware currently embeds its own lightweight dashboard in `index_html`. The
-standalone page is intentionally separate so the firmware and sensor decision logic
-remain unchanged. To serve this polished page from the ESP32, replace only the
-contents of the firmware's `index_html` raw string with the browser-ready contents
-of `Dashboard.html` (keeping the existing `/ws` handler and JSON broadcast code).
-For local development or larger future builds, it can also be served as a static
-file from any computer on the same LAN; no backend or cloud service is required.
+For a dashboard served over ordinary local HTTP, use `ws://`. Use `wss://` only
+when the page is served over HTTPS and the ESP32 endpoint is available through a
+TLS-enabled reverse proxy; the current ESP32 firmware does not terminate TLS
+itself.
+
+`main.ino` embeds the same browser-ready contents as `Dashboard.html` in its
+`index_html` `PROGMEM` string. The standalone file is useful for local development
+or for serving from another computer on the same LAN; no backend or cloud service
+is required.
 
 ## Telemetry contract
 

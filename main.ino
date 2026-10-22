@@ -1,0 +1,345 @@
+#include <WiFi.h>
+#include <string.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
+#include <ESP32Servo.h>
+
+// Arduino IDE board selection: ESP32 Dev Module.
+// Enter your own network details here before uploading the sketch.
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+
+// Exact hardware pin configuration for the FloodGuard prototype.
+constexpr uint8_t MOISTURE_SENSOR_1_PIN = 32;
+constexpr uint8_t MOISTURE_SENSOR_2_PIN = 34;
+constexpr uint8_t MOISTURE_SENSOR_3_PIN = 35;
+constexpr uint8_t LEFT_SERVO_PIN = 12;
+constexpr uint8_t RIGHT_SERVO_PIN = 13;
+constexpr uint8_t GREEN_LED_PIN = 25;
+constexpr uint8_t YELLOW_LED_PIN = 26;
+constexpr uint8_t RED_LED_PIN = 27;
+
+// Risk thresholds are percentages.
+constexpr int CAUTION_THRESHOLD_PERCENT = 40;
+constexpr int DANGER_THRESHOLD_PERCENT = 80;
+
+// The calibration endpoints can be adjusted for the installed sensors.
+constexpr int DRY_SENSOR_READING = 4095;
+constexpr int WET_SENSOR_READING = 1500;
+
+constexpr int OPEN_GATE_ANGLE = 90;
+constexpr int CLOSED_GATE_ANGLE = 0;
+constexpr unsigned long TELEMETRY_INTERVAL_MS = 500;
+
+Servo leftGateServo;
+Servo rightGateServo;
+AsyncWebServer server(80);
+AsyncWebSocket webSocket("/ws");
+
+const char index_html[] PROGMEM = R"FLOODGUARD_HTML(
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#cfeff2">
+  <meta name="description" content="FloodGuard live environmental monitoring dashboard">
+  <title>FloodGuard · Environmental Monitoring</title>
+  <style>
+    :root{--bg:#cfeff2;--ink:#14212b;--muted:#64748b;--line:#e8eef3;--card:#fff;--teal:#55c5ce;--blue:#70b8f2;--purple:#9180f5;--green:#22a06b;--amber:#e7ad32;--red:#e5484d;--shadow:0 18px 45px rgba(44,86,110,.11);--radius:24px}
+    *{box-sizing:border-box}body{margin:0;min-width:320px;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}button,input{font:inherit}button{cursor:pointer;border:0}h1,h2,h3,p{margin:0}.shell{width:min(1320px,calc(100% - 48px));margin:auto;padding:34px 0 52px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:25px}.brand{display:flex;gap:13px;align-items:center}.brand-mark{width:45px;height:45px;border-radius:15px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#55c5ce,#9180f5);box-shadow:0 10px 20px #70b8f255}.brand-mark svg{width:25px}.eyebrow,.label{color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}.brand h1{font-size:18px;letter-spacing:-.04em}.brand p{color:var(--muted);font-size:11px;margin-top:1px}.top-actions{display:flex;align-items:center;gap:10px}.connection,.icon-btn{display:flex;align-items:center;gap:9px;min-height:42px;padding:0 14px;border:1px solid #fff;background:#ffffffb8;border-radius:14px;color:var(--muted);font-size:12px;font-weight:700;box-shadow:0 8px 20px #2c566e12}.icon-btn{width:42px;padding:0;justify-content:center}.icon-btn svg{width:18px}.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);box-shadow:0 0 0 4px #dbe8ee}.dot.live{background:var(--green);box-shadow:0 0 0 4px #d9f4e7}.dot.warn{background:var(--amber);box-shadow:0 0 0 4px #fff0cc}.dot.error{background:var(--red);box-shadow:0 0 0 4px #ffe0e3}.grid{display:grid;gap:18px}.summary{grid-template-columns:repeat(4,1fr);margin-bottom:18px}.card{background:var(--card);border:1px solid #fff;border-radius:var(--radius);box-shadow:var(--shadow)}.summary-card{min-height:145px;padding:20px}.card-head,.panel-head,.sensor-head,.event{display:flex;align-items:center;justify-content:space-between;gap:12px}.icon{width:37px;height:37px;border-radius:12px;display:grid;place-items:center;background:#e5f8f8;color:#299ba6}.icon svg{width:19px}.summary-value{margin-top:16px;font-size:27px;font-weight:850;letter-spacing:-.06em}.summary-value.state{font-size:18px;letter-spacing:-.03em;line-height:1.2}.summary-sub{color:var(--muted);font-size:11px;margin-top:5px}.meter{height:8px;margin-top:14px;overflow:hidden;background:#edf2f5;border-radius:99px}.meter i{display:block;height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,var(--teal),var(--purple));transition:width .4s}.sensor-mini{display:flex;gap:7px;margin-top:12px}.sensor-mini i{width:8px;height:8px;border-radius:50%;background:#dbe5ea}.sensor-mini i.active{background:var(--green);box-shadow:0 0 0 3px #e2f6eb}.gate-pair{display:flex;gap:8px;margin-top:15px}.gate-pair span{flex:1;padding:7px 5px;text-align:center;background:#ecf9f2;border-radius:9px;color:var(--green);font-size:10px;font-weight:800}.gate-pair span.closed{background:#ffeaeb;color:var(--red)}.main-grid{grid-template-columns:minmax(0,1.28fr) minmax(320px,.72fr);margin-bottom:18px}.panel{padding:23px}.panel-title{font-size:16px;font-weight:850;letter-spacing:-.04em}.panel-sub{color:var(--muted);font-size:11px;margin-top:3px}.hero{position:relative;min-height:333px;overflow:hidden;padding:28px;color:#fff;background:linear-gradient(135deg,#6bb9f4 0%,#8175ee 58%,#aa7de7 100%)}.hero.caution{background:linear-gradient(135deg,#f1c45e,#e98956 55%,#df6974)}.hero.danger{background:linear-gradient(135deg,#e75b68,#bc426d 55%,#704b98)}.hero:after{content:"";position:absolute;right:-85px;bottom:-175px;width:365px;height:365px;border:1px solid #ffffff50;border-radius:50%;box-shadow:0 0 0 34px #ffffff12,0 0 0 70px #ffffff0b}.hero>*{position:relative;z-index:1}.hero .label{color:#ffffffb8}.hero h2{max-width:600px;margin-top:26px;font-size:clamp(38px,5vw,66px);line-height:.94;letter-spacing:-.075em}.hero-copy{max-width:430px;margin-top:18px;color:#ffffffc7}.hero-footer{position:absolute;right:28px;bottom:25px;left:28px;display:flex;align-items:end;justify-content:space-between;gap:16px}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 13px;border:1px solid #ffffff40;border-radius:99px;background:#ffffff22;font-size:11px;font-weight:800}.pill:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.hero-updated{color:#ffffffb8;font-size:11px}.risk-side{padding:25px}.risk-line{display:flex;align-items:center;gap:12px;margin:24px 0 17px}.risk-orb{width:46px;height:46px;display:grid;place-items:center;border-radius:15px;color:var(--green);background:#e3f8ec}.risk-orb.caution{color:var(--amber);background:#fff5dc}.risk-orb.danger{color:var(--red);background:#ffeaeb}.risk-orb svg{width:23px}.risk-name{font-size:21px;font-weight:850;letter-spacing:-.05em}.explanation{padding:12px;border-radius:13px;background:#f7fafb;color:var(--muted);font-size:12px}.explanation strong{color:var(--ink)}.readings{display:grid;gap:10px;margin-top:19px}.reading{display:grid;grid-template-columns:68px 1fr 42px;align-items:center;gap:9px;font-size:11px}.reading span:first-child{color:var(--muted)}.reading b{text-align:right}.tiny-track{height:6px;overflow:hidden;background:#edf2f5;border-radius:99px}.tiny-track i{display:block;width:0;height:100%;border-radius:inherit;background:var(--teal);transition:width .4s}.sensors{grid-template-columns:repeat(3,1fr);margin-bottom:18px}.sensor-card{padding:21px}.sensor-title{font-size:14px;font-weight:850}.sensor-place{color:var(--muted);font-size:11px;margin-top:3px}.sensor-value{margin-top:24px;font-size:38px;font-weight:850;letter-spacing:-.08em}.sensor-value small{color:var(--muted);font-size:15px;letter-spacing:0}.sensor-status{display:inline-block;margin-top:9px;padding:5px 8px;border-radius:7px;background:#e9f8ef;color:var(--green);font-size:10px;font-weight:800}.sensor-status.caution{background:#fff5dc;color:#a7710e}.sensor-status.danger{background:#ffeaeb;color:#bf343b}.sensor-bar{height:9px;margin-top:19px;overflow:hidden;background:#edf2f5;border-radius:99px}.sensor-bar i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--teal),var(--blue));transition:width .4s}.bottom-grid{grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);margin-bottom:18px}.chart-box{min-height:365px}.ranges{display:flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:10px;background:#f5f8fa}.ranges button{padding:6px 9px;border-radius:7px;color:var(--muted);background:transparent;font-size:10px;font-weight:800}.ranges button.active{color:#287f88;background:#fff;box-shadow:0 2px 7px #14212b12}.chart{height:245px;margin-top:19px}.chart svg{width:100%;height:100%;overflow:visible}.chart-grid{stroke:#e9eff3;stroke-width:1}.chart-axis{fill:#9aa8b5;font-size:10px}.chart-threshold{stroke:#e7ad32;stroke-width:1;stroke-dasharray:4 4}.chart-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.chart-dot{stroke:#fff;stroke-width:2}.chart-empty{height:100%;display:grid;place-items:center;text-align:center;color:var(--muted);font-size:12px}.chart-empty span{display:block;margin-top:8px}.legend{display:flex;gap:17px;margin-top:9px;color:var(--muted);font-size:10px}.legend i{display:inline-block;width:8px;height:8px;margin-right:5px;border-radius:50%}.lower-grid{grid-template-columns:1fr 1fr}.gates-card,.events-card{min-height:230px}.gate-visuals{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px}.gate-visual{padding:14px;text-align:center;border:1px solid var(--line);border-radius:15px}.gate-visual svg{width:76px;height:76px;margin:6px auto 7px;display:block}.gate-visual strong{display:block;font-size:12px}.gate-visual small{color:var(--muted);font-size:10px}.gate-state{display:inline-block;margin-top:9px;padding:5px 9px;border-radius:99px;background:#e9f8ef;color:var(--green);font-size:10px;font-weight:800}.gate-state.closed{background:#ffeaeb;color:var(--red)}.events{display:grid;gap:0;margin-top:14px}.event{padding:11px 0;border-bottom:1px solid var(--line);font-size:11px}.event:last-child{border-bottom:0}.event-main{display:flex;align-items:center;gap:9px}.event-dot{width:8px;height:8px;border-radius:50%;background:var(--green)}.event-dot.warn{background:var(--amber)}.event-dot.danger{background:var(--red)}.event-dot.neutral{background:var(--blue)}.event time{color:var(--muted);font-size:10px}.notice{display:none;padding:10px 13px;margin-bottom:16px;border:1px solid #f3d99b;border-radius:13px;background:#fff7e2;color:#8a681d;font-size:12px}.notice.show{display:block}.modal{display:none;position:fixed;inset:0;z-index:10;place-items:center;padding:20px;background:#14212b55}.modal.show{display:grid}.dialog{width:min(420px,100%);padding:25px;border-radius:22px;background:#fff;box-shadow:0 25px 80px #14212b33}.dialog h2{font-size:20px;letter-spacing:-.05em}.dialog p{margin-top:5px;color:var(--muted);font-size:12px}.dialog label{display:block;margin-top:20px;color:var(--muted);font-size:11px;font-weight:800}.dialog input{width:100%;margin-top:7px;padding:12px 13px;border:1px solid var(--line);border-radius:11px;outline:0;color:var(--ink)}.dialog input:focus{border-color:var(--teal)}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}.dialog-actions button{padding:10px 14px;border-radius:10px;font-size:12px;font-weight:800}.cancel{background:#f1f5f7;color:var(--muted)}.save{color:#fff;background:var(--ink)}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .mode-switch{display:flex;gap:3px;padding:3px;border:1px solid #fff;background:#ffffffb8;border-radius:12px;box-shadow:0 8px 20px #2c566e12}.mode-switch button{padding:7px 9px;border-radius:8px;background:transparent;color:var(--muted);font-size:10px;font-weight:850}.mode-switch button.active{background:#fff;color:var(--ink);box-shadow:0 2px 7px #14212b15}.demo-badge{display:none;align-items:center;gap:6px;padding:8px 11px;border-radius:99px;background:#fff0d1;color:#956b16;font-size:10px;font-weight:850;letter-spacing:.05em}.demo-badge.show{display:flex}.demo-badge:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber)}.demo-panel{display:none;padding:20px;margin-bottom:18px;border:1px solid #fff;background:linear-gradient(120deg,#ffffffd9,#f7f5ffeb)}.demo-panel.show{display:block}.demo-head{display:flex;align-items:center;justify-content:space-between;gap:14px}.demo-title{font-size:16px;font-weight:850;letter-spacing:-.04em}.demo-sub{color:var(--muted);font-size:11px;margin-top:3px}.demo-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:17px}.demo-actions button{padding:9px 11px;border-radius:10px;background:#eef8f8;color:#267f87;font-size:11px;font-weight:850;transition:transform .2s,background .2s}.demo-actions button:hover{transform:translateY(-1px);background:#dff4f4}.demo-actions .primary{color:#fff;background:linear-gradient(135deg,#55c5ce,#9180f5)}.demo-actions .danger-action{color:#a33b40;background:#ffeaeb}.demo-actions .reset{color:var(--muted);background:#f0f4f6}.demo-sliders{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}.slider-label{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;font-weight:750}.slider-label b{color:var(--ink)}input[type=range]{width:100%;margin-top:9px;accent-color:var(--purple)}.demo-note{margin-top:13px;color:#94701d;font-size:11px}.mode-live .demo-panel{display:none}.hero.demo-hero:before{content:"DEMO SIMULATION";position:absolute;top:19px;right:24px;padding:6px 9px;border:1px solid #ffffff55;border-radius:99px;background:#ffffff24;font-size:9px;font-weight:850;letter-spacing:.08em}.leds{display:flex;gap:9px;margin-top:18px}.led{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px}.led i{width:9px;height:9px;border-radius:50%;background:#d8e2e7}.led.on i{box-shadow:0 0 0 4px currentColor}.led.green.on{color:var(--green)}.led.green.on i{background:var(--green)}.led.yellow.on{color:var(--amber)}.led.yellow.on i{background:var(--amber)}.led.red.on{color:var(--red)}.led.red.on i{background:var(--red)}.risk-pulse{animation:riskPulse .55s ease}@keyframes riskPulse{50%{transform:scale(1.012);box-shadow:0 22px 55px rgba(44,86,110,.2)}}@keyframes gateChange{50%{transform:translateY(-3px)}}.gate-visual.changed svg{animation:gateChange .45s ease}
+    @media(max-width:1000px){.summary{grid-template-columns:repeat(2,1fr)}.main-grid,.bottom-grid{grid-template-columns:1fr}.risk-side{min-height:0}.demo-sliders{grid-template-columns:1fr}}
+    @media(max-width:680px){.shell{width:min(100% - 24px,1320px);padding-top:22px}.topbar{align-items:flex-start;flex-direction:column}.top-actions{width:100%}.connection{flex:1}.sensors,.lower-grid{grid-template-columns:1fr}.summary{gap:12px}.summary-card{padding:16px;min-height:132px}.hero{min-height:350px;padding:24px}.hero h2{font-size:47px}.hero-footer{right:24px;bottom:23px;left:24px}.panel{padding:19px}.sensor-card{padding:18px}.chart-box{min-height:340px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3C8.7 7.1 6 10.3 6 14a6 6 0 0 0 12 0c0-3.7-2.7-6.9-6-11Z"/><path d="M9 15.5c.5 1.4 1.5 2.1 3 2.1"/></svg></div><div><h1>FloodGuard</h1><p>Environmental monitoring</p></div></div>
+      <div class="top-actions"><div class="mode-switch" role="group" aria-label="Dashboard mode"><button class="active" id="liveModeButton" type="button">LIVE MODE</button><button id="demoModeButton" type="button">DEMO MODE</button></div><span class="demo-badge" id="demoBadge">DEMO SIMULATION</span><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">Disconnected</span></div><button class="icon-btn" id="settingsButton" type="button" aria-label="Open connection settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/><path d="m19.4 15 .1.1a1.8 1.8 0 0 1-2.5 2.5l-.1-.1a1.8 1.8 0 0 0-3 .9v.2a1.8 1.8 0 0 1-3.6 0v-.2a1.8 1.8 0 0 0-3-.9l-.1.1a1.8 1.8 0 0 1-2.5-2.5l.1-.1a1.8 1.8 0 0 0-.9-3H4a1.8 1.8 0 0 1 0-3.6h.2a1.8 1.8 0 0 0 .9-3L5 5.3A1.8 1.8 0 0 1 7.5 2.8l.1.1a1.8 1.8 0 0 0 3-.9v-.2a1.8 1.8 0 0 1 3.6 0V2a1.8 1.8 0 0 0 3 .9l.1-.1a1.8 1.8 0 0 1 2.5 2.5l-.1.1a1.8 1.8 0 0 0 .9 3h.2a1.8 1.8 0 0 1 0 3.6h-.2a1.8 1.8 0 0 0-.9 3Z"/></svg></button></div>
+    </header>
+    <section class="card demo-panel" id="demoPanel" aria-label="Demo simulation controls">
+      <div class="demo-head"><div><h2 class="demo-title">Interactive demo simulation</h2><p class="demo-sub">Simulated values only · no ESP32 data is used in this mode</p></div><strong class="label" id="demoRunState">Paused</strong></div>
+      <div class="demo-actions"><button class="primary" id="startDemo" type="button">START DEMO</button><button id="pauseDemo" type="button">PAUSE DEMO</button><button class="reset" id="resetDemo" type="button">RESET DEMO</button><button id="risingDemo" type="button">SIMULATE RISING MOISTURE</button><button id="localizedDemo" type="button">SIMULATE LOCALIZED WETNESS</button><button id="cautionSensorDemo" type="button">ONE SENSOR AT 40%</button><button class="danger-action" id="dangerSensorDemo" type="button">ONE SENSOR AT 80%</button><button class="danger-action" id="dangerDemo" type="button">SIMULATE DANGER</button><button id="recoveryDemo" type="button">SIMULATE RECOVERY</button></div>
+      <div class="demo-sliders"><label><span class="slider-label"><span>Sensor 1</span><b id="sliderValue1">25%</b></span><input id="slider1" type="range" min="0" max="100" value="25"></label><label><span class="slider-label"><span>Sensor 2</span><b id="sliderValue2">32%</b></span><input id="slider2" type="range" min="0" max="100" value="32"></label><label><span class="slider-label"><span>Sensor 3</span><b id="sliderValue3">28%</b></span><input id="slider3" type="range" min="0" max="100" value="28"></label></div>
+      <p class="demo-note">The simulation applies the firmware rules exactly: average or any sensor ≥ 80 is a red lockdown; average &gt; 40 or any sensor ≥ 40 is an amber CAUTION and keeps both gates open.</p>
+    </section>
+    <div class="notice" id="staleNotice" role="status">No telemetry has arrived recently. Check the ESP32 power, Wi-Fi, and WebSocket address.</div>
+    <section class="grid summary" aria-label="System summary">
+      <article class="card summary-card"><div class="card-head"><span class="label">Average moisture</span><span class="icon">◒</span></div><div class="summary-value"><span id="avgValue">—</span><small>%</small></div><div class="meter"><i id="avgMeter"></i></div><p class="summary-sub" id="avgUpdated">Waiting for telemetry</p></article>
+      <article class="card summary-card"><div class="card-head"><span class="label">Current risk state</span><span class="icon">◇</span></div><div class="summary-value state" id="stateValue">Waiting for data</div><p class="summary-sub">Source: ESP32 state machine</p></article>
+      <article class="card summary-card"><div class="card-head"><span class="label">Sensor status</span><span class="icon">⌁</span></div><div class="summary-value"><span id="sensorCount">0</span><small>/ 3 Active</small></div><div class="sensor-mini" aria-label="Sensor activity"><i id="mini1"></i><i id="mini2"></i><i id="mini3"></i></div><p class="summary-sub" id="sensorUpdated">No valid readings yet</p></article>
+      <article class="card summary-card"><div class="card-head"><span class="label">Safety gates</span><span class="icon">⌗</span></div><div class="summary-value state" id="gatesValue">Waiting for data</div><div class="gate-pair"><span id="gateMiniLeft">LEFT —</span><span id="gateMiniRight">RIGHT —</span></div></article>
+    </section>
+    <section class="grid main-grid">
+      <article class="card hero" id="hero"><span class="label">Live risk monitoring</span><h2 id="heroState">Awaiting<br>telemetry</h2><p class="hero-copy" id="heroCopy">Connect FloodGuard to see live soil saturation and automatic safety monitoring.</p><div class="hero-footer"><span class="pill" id="heroPill">No live connection</span><span class="hero-updated" id="heroUpdated">Last received —</span></div></article>
+      <article class="card risk-side"><div class="panel-head"><div><h2 class="panel-title">Reading overview</h2><p class="panel-sub" id="overviewSource">Values reported by the ESP32</p></div></div><div class="risk-line"><div class="risk-orb" id="riskOrb">◇</div><strong class="risk-name" id="riskName">Waiting</strong></div><div class="explanation" id="explanation"><strong>Live explanation</strong><br>Valid telemetry will appear here.</div><div class="readings"><div class="reading"><span>Sensor 1</span><div class="tiny-track"><i id="read1"></i></div><b id="read1Value">—</b></div><div class="reading"><span>Sensor 2</span><div class="tiny-track"><i id="read2"></i></div><b id="read2Value">—</b></div><div class="reading"><span>Sensor 3</span><div class="tiny-track"><i id="read3"></i></div><b id="read3Value">—</b></div></div><div class="leds" aria-label="LED status"><span class="led green" id="ledGreen"><i></i>Green LED</span><span class="led yellow" id="ledYellow"><i></i>Yellow LED</span><span class="led red" id="ledRed"><i></i>Red LED</span></div></article>
+    </section>
+    <section class="grid sensors" aria-label="Moisture sensors">
+      <article class="card sensor-card" data-sensor="1"><div class="sensor-head"><div><h3 class="sensor-title">Sensor 1 — Location A</h3><p class="sensor-place">Lower slope monitoring point</p></div><span class="label">GPIO 32</span></div><div class="sensor-value"><span class="value">—</span><small>%</small></div><span class="sensor-status">Waiting for data</span><div class="sensor-bar"><i></i></div></article>
+      <article class="card sensor-card" data-sensor="2"><div class="sensor-head"><div><h3 class="sensor-title">Sensor 2 — Location B</h3><p class="sensor-place">Mid-slope monitoring point</p></div><span class="label">GPIO 34</span></div><div class="sensor-value"><span class="value">—</span><small>%</small></div><span class="sensor-status">Waiting for data</span><div class="sensor-bar"><i></i></div></article>
+      <article class="card sensor-card" data-sensor="3"><div class="sensor-head"><div><h3 class="sensor-title">Sensor 3 — Location C</h3><p class="sensor-place">Upper slope monitoring point</p></div><span class="label">GPIO 35</span></div><div class="sensor-value"><span class="value">—</span><small>%</small></div><span class="sensor-status">Waiting for data</span><div class="sensor-bar"><i></i></div></article>
+    </section>
+    <section class="grid bottom-grid">
+      <article class="card panel chart-box"><div class="panel-head"><div><h2 class="panel-title">Live moisture history</h2><p class="panel-sub" id="chartSubtitle">Waiting for valid readings</p></div><div class="ranges" role="group" aria-label="Chart time range"><button data-range="1">1 min</button><button class="active" data-range="5">5 min</button><button data-range="15">15 min</button></div></div><div class="chart" id="chart"><div class="chart-empty" id="chartEmpty"><div><strong>No live readings yet</strong><span>The chart will populate when the WebSocket receives telemetry.</span></div></div></div><div class="legend"><span><i style="background:#55c5ce"></i>Sensor 1</span><span><i style="background:#9180f5"></i>Sensor 2</span><span><i style="background:#70b8f2"></i>Sensor 3</span></div></article>
+      <article class="card panel gates-card"><div class="panel-head"><div><h2 class="panel-title">Gate command status</h2><p class="panel-sub">Commanded position · no physical feedback</p></div><span class="label" id="gateCommand">—</span></div><div class="gate-visuals"><div class="gate-visual" id="leftGate"><svg viewBox="0 0 100 90" fill="none"><path d="M17 74h66M25 74V20M75 74V20M25 28h50" stroke="#b4c4ce" stroke-width="4" stroke-linecap="round"/><path d="M25 28 67 62" stroke="#55c5ce" stroke-width="7" stroke-linecap="round"/></svg><strong>Left Gate</strong><small>Servo on GPIO 12</small><span class="gate-state">OPEN</span></div><div class="gate-visual" id="rightGate"><svg viewBox="0 0 100 90" fill="none"><path d="M17 74h66M25 74V20M75 74V20M25 28h50" stroke="#b4c4ce" stroke-width="4" stroke-linecap="round"/><path d="M25 28 67 62" stroke="#55c5ce" stroke-width="7" stroke-linecap="round"/></svg><strong>Right Gate</strong><small>Servo on GPIO 13</small><span class="gate-state">OPEN</span></div></div></article>
+    </section>
+    <section class="grid lower-grid"><article class="card panel events-card"><div class="panel-head"><div><h2 class="panel-title">Recent events</h2><p class="panel-sub">State changes and connection activity</p></div></div><div class="events" id="events"><div class="event"><div class="event-main"><i class="event-dot neutral"></i><span>Waiting for connection</span></div><time>—</time></div></div></article><article class="card panel"><div class="panel-head"><div><h2 class="panel-title">Connection details</h2><p class="panel-sub">Local WebSocket telemetry</p></div></div><p class="summary-sub" style="margin-top:22px">Endpoint</p><strong id="endpointLabel" style="display:block;margin-top:4px;overflow-wrap:anywhere">Not configured</strong><p class="summary-sub" style="margin-top:17px">Last data received</p><strong id="lastDataLabel" style="display:block;margin-top:4px">—</strong></article></section>
+  </main>
+  <div class="modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"><form class="dialog" id="settingsForm"><h2 id="settingsTitle">ESP32 connection</h2><p>Enter an IP address, hostname, or complete WebSocket URL. Local HTTP dashboards use <strong>ws://&lt;ESP32-IP&gt;/ws</strong>; use <strong>wss://</strong> only when the dashboard is served over HTTPS and the device is behind a TLS-enabled proxy.</p><label for="addressInput">ESP32 IP address or WebSocket URL</label><input id="addressInput" placeholder="192.168.4.1 or ws://192.168.4.1/ws" autocomplete="off"><div class="dialog-actions"><button class="cancel" id="cancelSettings" type="button">Cancel</button><button class="save" type="submit">Save & connect</button></div></form></div>
+  <script>
+    const STALE_MS=2500, MAX_POINTS=900, storageKey="floodguard-esp32-address";
+    const $=id=>document.getElementById(id), state={socket:null,lastMessage:0,points:[],range:5,lastRisk:"",lastGates:"",events:[]};
+    const descriptions={NORMAL:"All moisture readings are below the configured caution thresholds. Gates remain open at the safe position.",CAUTION:"The average or at least one sensor has reached the caution threshold. Both gates remain open.", "RED ZONE":"The average or at least one sensor has reached the critical threshold. Both gates have been commanded to close."};
+    function riskClass(value){return value==="CAUTION"?"caution":value==="RED ZONE"?"danger":"normal"}
+    function validNumber(value){return typeof value==="number"&&Number.isFinite(value)&&value>=0&&value<=100}
+    function formatTime(date){return date.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})}
+    function addEvent(text,severity="neutral"){state.events.unshift({text,severity,time:new Date()});state.events=state.events.slice(0,5);$("events").innerHTML=state.events.map(item=>`<div class="event"><div class="event-main"><i class="event-dot ${item.severity}"></i><span>${item.text}</span></div><time>${formatTime(item.time)}</time></div>`).join("")}
+    function setConnection(kind,text){$("connectionDot").className=`dot ${kind}`;$("connectionText").textContent=text}
+    function endpoint(){let value=localStorage.getItem(storageKey)||"";if(!value&&window.location.hostname&&window.location.protocol!=="file:")value=`${window.location.protocol==="https:"?"wss":"ws"}://${window.location.host}/ws`;if(!value)return "";if(!/^wss?:\/\//i.test(value))value=`ws://${value.replace(/\/+$/,"")}/ws`;else if(!/\/ws\/?$/i.test(value))value=value.replace(/\/+$/,"")+"/ws";return value}
+    function openConnection(){const url=endpoint();if(!url){setConnection("warn","Not configured");$("endpointLabel").textContent="Not configured";return}if(state.socket){state.socket.onclose=null;state.socket.close()}$("endpointLabel").textContent=url;setConnection("warn","Connecting…");let socket;try{socket=new WebSocket(url)}catch(error){setConnection("error","Invalid address");return}state.socket=socket;socket.onopen=()=>{setConnection("live","Connected");addEvent("Connection established","neutral")};socket.onmessage=event=>{try{const payload=JSON.parse(event.data);receive(payload)}catch(error){addEvent("Invalid telemetry ignored","warn")}};socket.onerror=()=>setConnection("error","Connection error");socket.onclose=()=>{setConnection("error","Disconnected");addEvent("Connection lost","danger");setTimeout(()=>{if(state.socket===socket)openConnection()},1800)}}
+    function receive(payload){const values=[payload.s1,payload.s2,payload.s3];if(!values.every(validNumber)||!validNumber(payload.avg)||typeof payload.state!=="string"||typeof payload.gates!=="string"){addEvent("Incomplete telemetry ignored","warn");return}state.lastMessage=Date.now();const point={time:Date.now(),s1:values[0],s2:values[1],s3:values[2]};state.points.push(point);const cutoff=Date.now()-15*60*1000;state.points=state.points.filter(item=>item.time>=cutoff).slice(-MAX_POINTS);const previousRisk=state.lastRisk,previousGates=state.lastGates;render(payload);if(previousRisk!==payload.state){if(payload.state==="CAUTION"){const causes=values.map((value,index)=>value>=40?`sensor ${index+1}`:null).filter(Boolean);addEvent(`CAUTION entered${causes.length?` by ${causes.join(", ")}`:""}; gates remain OPEN`,"caution")}else{const closesGates=payload.state==="RED ZONE";addEvent(closesGates?`Risk state changed to ${payload.state}; both gates commanded CLOSED`:`Risk state changed to ${payload.state}`,riskClass(payload.state))}}if(previousGates&&previousGates!==payload.gates)addEvent(`Gates commanded ${payload.gates}`,payload.gates==="CLOSED"?"danger":"neutral");state.lastRisk=payload.state;state.lastGates=payload.gates}
+    function render(data){const risk=riskClass(data.state),avg=Math.max(0,Math.min(100,data.avg)),gates=data.gates.toUpperCase();$("avgValue").textContent=Number(data.avg).toFixed(1);$("avgMeter").style.width=`${avg}%`;$("avgUpdated").textContent=`Updated ${formatTime(new Date())}`;$("stateValue").textContent=data.state;$("stateValue").className=`summary-value state ${risk}`;$("sensorCount").textContent=[data.s1,data.s2,data.s3].filter(validNumber).length;$("sensorUpdated").textContent="All values from latest message";$("gatesValue").textContent=gates;$("gateCommand").textContent=`Commanded ${gates}`;$("hero").className=`card hero ${risk}`;$("heroState").innerHTML=data.state==="RED ZONE"?"Red zone<br>lockdown":data.state==="CAUTION"?"Caution<br>threshold":"All systems<br>normal";$("heroCopy").textContent=descriptions[data.state]||"The ESP32 reported an state not recognized by this dashboard."; $("heroPill").textContent=`${data.state} · ${gates}`;$("heroUpdated").textContent=`Last received ${formatTime(new Date())}`;$("riskOrb").className=`risk-orb ${risk}`;$("riskName").textContent=data.state;$("explanation").innerHTML=`<strong>${data.state==="NORMAL"?"Normal status":data.state==="CAUTION"?"Amber warning":"Red alert"}</strong><br>${descriptions[data.state]||"State supplied by the ESP32."}`;["green","yellow","red"].forEach(color=>$(`led${color[0].toUpperCase()+color.slice(1)}`).className=`led ${color} ${data.state==="NORMAL"&&color==="green"||data.state==="CAUTION"&&color==="yellow"||data.state==="RED ZONE"&&color==="red"?"on":""}`);[1,2,3].forEach((n,i)=>{const value=data[`s${n}`];document.querySelector(`[data-sensor="${n}"] .value`).textContent=Number(value).toFixed(1);const status=document.querySelector(`[data-sensor="${n}"] .sensor-status`);status.textContent=value>=80?"Critical":value>=40?"Caution":"Normal";status.className=`sensor-status ${value>=80?"danger":value>=40?"caution":""}`;document.querySelector(`[data-sensor="${n}"] .sensor-bar i`).style.width=`${value}%`; $(`mini${n}`).className="active";$(`read${n}`).style.width=`${value}%`;$(`read${n}Value`).textContent=`${Number(value).toFixed(0)}%`});$("gateMiniLeft").textContent=`LEFT ${gates}`;$("gateMiniRight").textContent=`RIGHT ${gates}`;document.querySelectorAll(".gate-state").forEach(item=>{item.textContent=gates;item.className=`gate-state ${gates==="CLOSED"?"closed":""}`});if(state.lastGates!==gates)document.querySelectorAll(".gate-visual").forEach(item=>{item.classList.remove("changed");void item.offsetWidth;item.classList.add("changed")});$("lastDataLabel").textContent=new Date().toLocaleString();drawChart()}
+    function drawChart(){const chart=$("chart");if(!state.points.length){chart.innerHTML='<div class="chart-empty"><div><strong>No live readings yet</strong><span>The chart will populate when the WebSocket receives telemetry.</span></div></div>';return}const now=Date.now(),since=now-state.range*60000,points=state.points.filter(item=>item.time>=since),width=700,height=245,left=34,right=10,top=12,bottom=28,innerW=width-left-right,innerH=height-top-bottom,x=t=>left+((t-since)/(state.range*60000))*innerW,y=v=>top+(100-v)/100*innerH;let svg=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Live moisture chart"><line class="chart-threshold" x1="${left}" x2="${width-right}" y1="${y(40)}" y2="${y(40)}"/>`;[0,25,50,75,100].forEach(v=>{svg+=`<line class="chart-grid" x1="${left}" x2="${width-right}" y1="${y(v)}" y2="${y(v)}"/><text class="chart-axis" x="0" y="${y(v)+3}">${v}%</text>`});const colors=["#55c5ce","#9180f5","#70b8f2"];[1,2,3].forEach((n,index)=>{const path=points.map((p,i)=>`${i?"L":"M"} ${x(p.time).toFixed(1)} ${y(p[`s${n}`]).toFixed(1)}`).join(" ");svg+=`<path class="chart-line" stroke="${colors[index]}" d="${path}"/>`;const last=points[points.length-1];if(last)svg+=`<circle class="chart-dot" fill="${colors[index]}" cx="${x(last.time)}" cy="${y(last[`s${n}`])}" r="4"><title>Sensor ${n}: ${last[`s${n}`].toFixed(1)}%</title></circle>`});svg+=`<text class="chart-axis" x="${left}" y="${height-5}">${state.range} min ago</text><text class="chart-axis" text-anchor="end" x="${width-right}" y="${height-5}">now</text></svg>`;chart.innerHTML=svg;$("chartSubtitle").textContent=`${points.length} live points · 40% caution reference`}
+    function staleCheck(){if(typeof dashboardMode!=="undefined"&&dashboardMode==="demo"){$("staleNotice").classList.remove("show");return}const stale=!state.lastMessage||Date.now()-state.lastMessage>STALE_MS;$("staleNotice").classList.toggle("show",stale&&!!endpoint());if(stale&&state.socket&&state.socket.readyState===1)setConnection("warn","Stale data")}
+    $("settingsButton").onclick=()=>{$("addressInput").value=localStorage.getItem(storageKey)||"";$("settingsModal").classList.add("show");$("addressInput").focus()};$("cancelSettings").onclick=()=>$("settingsModal").classList.remove("show");$("settingsForm").onsubmit=event=>{event.preventDefault();const value=$("addressInput").value.trim();if(value){localStorage.setItem(storageKey,value);$("settingsModal").classList.remove("show");state.lastMessage=0;openConnection()}};
+    document.querySelectorAll("[data-range]").forEach(button=>button.onclick=()=>{document.querySelectorAll("[data-range]").forEach(item=>item.classList.remove("active"));button.classList.add("active");state.range=Number(button.dataset.range);drawChart()});setInterval(staleCheck,700);setInterval(drawChart,5000);if(endpoint())openConnection();else setConnection("warn","Not configured");
+  </script>
+  <script>
+    let dashboardMode="live", demoTimer=null, demoRunning=false, demoPlan=null;
+    const initialDemo={s1:25,s2:32,s3:28};
+    function demoState(values){
+      const avg=(values.s1+values.s2+values.s3)/3;
+      if(avg>=80||values.s1>=80||values.s2>=80||values.s3>=80)return {avg,state:"RED ZONE",gates:"CLOSED"};
+      if(avg>40||values.s1>=40||values.s2>=40||values.s3>=40)return {avg,state:"CAUTION",gates:"OPEN"};
+      return {avg,state:"NORMAL",gates:"OPEN"};
+    }
+    function demoPayload(){return Object.assign({},demoData,demoState(demoData))}
+    let demoData=Object.assign({},initialDemo);
+    function setDemoRunState(text){$("demoRunState").textContent=text}
+    function stopDemoTimer(){if(demoTimer){clearInterval(demoTimer);demoTimer=null}demoRunning=false}
+    function startDemo(){if(dashboardMode!=="demo")return;stopDemoTimer();demoRunning=true;setDemoRunState("Running");emitDemo();demoTimer=setInterval(()=>{if(demoPlan){demoPlan();emitDemo()}},700)}
+    function pauseDemo(){if(dashboardMode!=="demo")return;stopDemoTimer();setDemoRunState("Paused")}
+    function resetDemo(){if(dashboardMode!=="demo")return;stopDemoTimer();demoPlan=null;demoData=Object.assign({},initialDemo);state.points=[];state.events=[];state.lastRisk="";state.lastGates="";$("events").innerHTML='<div class="event"><div class="event-main"><i class="event-dot neutral"></i><span>No demo events yet</span></div><time>—</time></div>';[1,2,3].forEach(n=>{$("slider"+n).value=demoData["s"+n];$("sliderValue"+n).textContent=demoData["s"+n]+"%"}) ;setDemoRunState("Paused");emitDemo()}
+    function emitDemo(){if(dashboardMode!=="demo")return;receiveDemo(demoPayload())}
+    function receiveDemo(payload){const previousRisk=state.lastRisk,previousGates=state.lastGates;state.lastMessage=Date.now();state.points.push({time:Date.now(),s1:payload.s1,s2:payload.s2,s3:payload.s3});state.points=state.points.slice(-MAX_POINTS);render(payload);if(previousRisk&&previousRisk!==payload.state)addEvent(demoReason(payload,previousRisk),"warn");if(previousGates&&previousGates!==payload.gates)addEvent(`Demo: gates commanded ${payload.gates}`,payload.gates==="CLOSED"?"danger":"neutral");state.lastRisk=payload.state;state.lastGates=payload.gates}
+    function demoReason(payload){if(payload.state==="CAUTION"){const sensor=[payload.s1,payload.s2,payload.s3].findIndex(value=>value>=40);return sensor>=0?`Demo: Sensor ${sensor+1} reached ${payload["s"+(sensor+1)].toFixed(0)}%. The system entered CAUTION and both gates remain OPEN.`:"Demo: Average saturation exceeded 40%. The system entered CAUTION and both gates remain OPEN."}if(payload.state==="RED ZONE")return `Demo: Critical moisture reached ${payload.avg.toFixed(0)}% average or a sensor threshold. Both gates were commanded to close.`;return "Demo: Moisture readings recovered below the configured caution thresholds."}
+    function setMode(mode){if(mode===dashboardMode)return;dashboardMode=mode;stopDemoTimer();if(state.socket){state.socket.onclose=null;state.socket.onerror=null;state.socket.onmessage=null;state.socket.close();state.socket=null}const demo=mode==="demo";$("demoPanel").classList.toggle("show",demo);$("demoBadge").classList.toggle("show",demo);$("liveModeButton").classList.toggle("active",!demo);$("demoModeButton").classList.toggle("active",demo);$("hero").classList.toggle("demo-hero",demo);$("overviewSource").textContent=demo?"Simulated values for presentation":"Values reported by the ESP32";$("staleNotice").classList.remove("show");if(demo){setConnection("warn","Demo ready");resetDemo()}else{clearTelemetryView();setConnection("warn","Not configured");openConnection()}}
+    function sliderChanged(number){if(dashboardMode!=="demo")return;stopDemoTimer();demoPlan=null;const key="s"+number;demoData[key]=Number($("slider"+number).value);$("sliderValue"+number).textContent=demoData[key]+"%";setDemoRunState("Paused");emitDemo()}
+    function risingPlan(){demoPlan=()=>{demoData.s1=Math.min(100,demoData.s1+3);demoData.s2=Math.min(100,demoData.s2+3);demoData.s3=Math.min(100,demoData.s3+3);if(demoData.s1===100&&demoData.s2===100&&demoData.s3===100)pauseDemo();syncSliders()}}
+    function recoveryPlan(){demoPlan=()=>{demoData.s1=Math.max(10,demoData.s1-3);demoData.s2=Math.max(10,demoData.s2-3);demoData.s3=Math.max(10,demoData.s3-3);if(demoData.s1===10&&demoData.s2===10&&demoData.s3===10)pauseDemo();syncSliders()}}
+    function syncSliders(){[1,2,3].forEach(n=>{$("slider"+n).value=demoData["s"+n];$("sliderValue"+n).textContent=demoData["s"+n]+"%"})}
+    function localizedDemo(){stopDemoTimer();demoPlan=null;demoData={s1:18,s2:45,s3:20};syncSliders();setDemoRunState("Paused");emitDemo()}
+    function cautionSensorDemo(){stopDemoTimer();demoPlan=null;demoData={s1:40,s2:20,s3:20};syncSliders();setDemoRunState("Paused");emitDemo()}
+    function dangerSensorDemo(){stopDemoTimer();demoPlan=null;demoData={s1:80,s2:20,s3:20};syncSliders();setDemoRunState("Paused");emitDemo()}
+    function dangerDemo(){stopDemoTimer();demoPlan=null;demoData={s1:84,s2:85,s3:83};syncSliders();setDemoRunState("Paused");emitDemo()}
+    function clearTelemetryView(){state.points=[];state.events=[];state.lastMessage=0;state.lastRisk="";state.lastGates="";$("events").innerHTML='<div class="event"><div class="event-main"><i class="event-dot neutral"></i><span>Waiting for live connection</span></div><time>—</time></div>';$("avgValue").textContent="—";$("avgMeter").style.width="0%";$("avgUpdated").textContent="Waiting for telemetry";$("stateValue").textContent="Waiting for data";$("stateValue").className="summary-value state";$("sensorCount").textContent="0";$("sensorUpdated").textContent="No valid readings yet";$("gatesValue").textContent="Waiting for data";$("gateCommand").textContent="—";$("hero").className="card hero";$("heroState").innerHTML="Awaiting<br>telemetry";$("heroCopy").textContent="Connect FloodGuard to see live soil saturation and automatic safety monitoring.";$("heroPill").textContent="No live connection";$("heroUpdated").textContent="Last received —";$("riskOrb").className="risk-orb";$("riskName").textContent="Waiting";$("explanation").innerHTML="<strong>Live explanation</strong><br>Valid telemetry will appear here.";[1,2,3].forEach(n=>{document.querySelector(`[data-sensor="${n}"] .value`).textContent="—";document.querySelector(`[data-sensor="${n}"] .sensor-status`).textContent="Waiting for data";document.querySelector(`[data-sensor="${n}"] .sensor-status`).className="sensor-status";document.querySelector(`[data-sensor="${n}"] .sensor-bar i`).style.width="0%";$("mini"+n).className="";$("read"+n).style.width="0%";$("read"+n+"Value").textContent="—"});["green","yellow","red"].forEach(name=>$("led"+name[0].toUpperCase()+name.slice(1)).className=`led ${name}`);$("gateMiniLeft").textContent="LEFT —";$("gateMiniRight").textContent="RIGHT —";document.querySelectorAll(".gate-state").forEach(item=>{item.textContent="OPEN";item.className="gate-state"});$("chartSubtitle").textContent="Waiting for valid readings";$("chart").innerHTML='<div class="chart-empty"><div><strong>No live readings yet</strong><span>The chart will populate when the WebSocket receives telemetry.</span></div></div>'}
+    $("liveModeButton").onclick=()=>setMode("live");$("demoModeButton").onclick=()=>setMode("demo");$("startDemo").onclick=startDemo;$("pauseDemo").onclick=pauseDemo;$("resetDemo").onclick=resetDemo;$("risingDemo").onclick=()=>{if(dashboardMode!=="demo")return;risingPlan();startDemo()};$("recoveryDemo").onclick=()=>{if(dashboardMode!=="demo")return;recoveryPlan();startDemo()};$("localizedDemo").onclick=localizedDemo;$("cautionSensorDemo").onclick=cautionSensorDemo;$("dangerSensorDemo").onclick=dangerSensorDemo;$("dangerDemo").onclick=dangerDemo;[1,2,3].forEach(n=>$("slider"+n).oninput=()=>sliderChanged(n));
+    const baseRender=render;
+    render=function(data){baseRender(data);const risk=riskClass(data.state);["green","yellow","red"].forEach(name=>$("led"+name[0].toUpperCase()+name.slice(1)).className=`led ${name}`);const active=data.state==="NORMAL"?"green":data.state==="CAUTION"?"yellow":"red";$("led"+active[0].toUpperCase()+active.slice(1)).classList.add("on");$("hero").classList.toggle("demo-hero",dashboardMode==="demo");$("overviewSource").textContent=dashboardMode==="demo"?"Simulated values for presentation":"Values reported by the ESP32";};
+    const liveReceive=receive,liveOpenConnection=openConnection;
+    receive=function(payload){if(dashboardMode==="live")liveReceive(payload)};
+    openConnection=function(){if(dashboardMode!=="live")return;liveOpenConnection()};
+    staleCheck=function(){if(dashboardMode==="demo"){$("staleNotice").classList.remove("show");return}const stale=!state.lastMessage||Date.now()-state.lastMessage>STALE_MS;$("staleNotice").classList.toggle("show",stale&&!!endpoint());if(stale&&state.socket&&state.socket.readyState===1)setConnection("warn","Stale data")};
+    setConnection("warn","Not configured");
+  </script>
+</body>
+</html>
+
+)FLOODGUARD_HTML";
+
+// Sensor and risk values are kept as named variables for easy inspection.
+int rawSensor1 = 0;
+int rawSensor2 = 0;
+int rawSensor3 = 0;
+int moisture1 = 0;
+int moisture2 = 0;
+int moisture3 = 0;
+float averageMoisture = 0.0;
+const char* riskState = "NORMAL";
+const char* gateStatus = "OPEN";
+
+int currentGateAngle = -1;
+unsigned long lastSensorUpdate = 0;
+
+int moisturePercentFromRaw(int rawReading) {
+  const long percentage = map(
+      rawReading,
+      DRY_SENSOR_READING,
+      WET_SENSOR_READING,
+      0,
+      100);
+  return constrain(percentage, 0L, 100L);
+}
+
+void readSensors() {
+  rawSensor1 = analogRead(MOISTURE_SENSOR_1_PIN);
+  rawSensor2 = analogRead(MOISTURE_SENSOR_2_PIN);
+  rawSensor3 = analogRead(MOISTURE_SENSOR_3_PIN);
+
+  moisture1 = moisturePercentFromRaw(rawSensor1);
+  moisture2 = moisturePercentFromRaw(rawSensor2);
+  moisture3 = moisturePercentFromRaw(rawSensor3);
+
+  averageMoisture = (moisture1 + moisture2 + moisture3) / 3.0;
+}
+
+void calculateRisk() {
+  // Danger is checked first so it always has priority over caution.
+  const bool dangerDetected =
+      averageMoisture >= DANGER_THRESHOLD_PERCENT ||
+      moisture1 >= DANGER_THRESHOLD_PERCENT ||
+      moisture2 >= DANGER_THRESHOLD_PERCENT ||
+      moisture3 >= DANGER_THRESHOLD_PERCENT;
+
+  if (dangerDetected) {
+    riskState = "RED ZONE";
+    gateStatus = "CLOSED";
+    return;
+  }
+
+  const bool cautionDetected =
+      averageMoisture > CAUTION_THRESHOLD_PERCENT ||
+      moisture1 >= CAUTION_THRESHOLD_PERCENT ||
+      moisture2 >= CAUTION_THRESHOLD_PERCENT ||
+      moisture3 >= CAUTION_THRESHOLD_PERCENT;
+
+  if (cautionDetected) {
+    riskState = "CAUTION";
+    gateStatus = "OPEN";
+    return;
+  }
+
+  riskState = "NORMAL";
+  gateStatus = "OPEN";
+}
+
+void updateLedIndicators() {
+  digitalWrite(GREEN_LED_PIN, strcmp(riskState, "NORMAL") == 0 ? HIGH : LOW);
+  digitalWrite(YELLOW_LED_PIN, strcmp(riskState, "CAUTION") == 0 ? HIGH : LOW);
+  digitalWrite(RED_LED_PIN, strcmp(riskState, "RED ZONE") == 0 ? HIGH : LOW);
+}
+
+void setGateAngle(int targetAngle) {
+  if (targetAngle == currentGateAngle) {
+    return;
+  }
+
+  leftGateServo.write(targetAngle);
+  rightGateServo.write(targetAngle);
+  currentGateAngle = targetAngle;
+}
+
+void updateServoGates() {
+  const int targetAngle = strcmp(gateStatus, "CLOSED") == 0
+                              ? CLOSED_GATE_ANGLE
+                              : OPEN_GATE_ANGLE;
+  setGateAngle(targetAngle);
+}
+
+void sendTelemetry(AsyncWebSocketClient* client = nullptr) {
+  StaticJsonDocument<256> telemetry;
+  telemetry["s1"] = moisture1;
+  telemetry["s2"] = moisture2;
+  telemetry["s3"] = moisture3;
+  telemetry["avg"] = averageMoisture;
+  telemetry["state"] = riskState;
+  telemetry["gates"] = gateStatus;
+
+  String message;
+  serializeJson(telemetry, message);
+
+  if (client != nullptr) {
+    client->text(message);
+  } else {
+    webSocket.textAll(message);
+  }
+}
+
+void handleWebSocketEvent(
+    AsyncWebSocket* serverInstance,
+    AsyncWebSocketClient* client,
+    AwsEventType eventType,
+    void* argument,
+    uint8_t* data,
+    size_t length) {
+  (void)serverInstance;
+  (void)argument;
+  (void)data;
+  (void)length;
+
+  if (eventType == WS_EVT_CONNECT) {
+    Serial.printf("WebSocket client %u connected\n", client->id());
+    sendTelemetry(client);
+  } else if (eventType == WS_EVT_DISCONNECT) {
+    Serial.printf("WebSocket client %u disconnected\n", client->id());
+  }
+}
+
+void setupWebSocket() {
+  webSocket.onEvent(handleWebSocketEvent);
+  server.addHandler(&webSocket);
+}
+
+void setupPinsAndServos() {
+  pinMode(MOISTURE_SENSOR_1_PIN, INPUT);
+  pinMode(MOISTURE_SENSOR_2_PIN, INPUT);
+  pinMode(MOISTURE_SENSOR_3_PIN, INPUT);
+  pinMode(GREEN_LED_PIN, OUTPUT);
+  pinMode(YELLOW_LED_PIN, OUTPUT);
+  pinMode(RED_LED_PIN, OUTPUT);
+  digitalWrite(GREEN_LED_PIN, LOW);
+  digitalWrite(YELLOW_LED_PIN, LOW);
+  digitalWrite(RED_LED_PIN, LOW);
+
+  leftGateServo.attach(LEFT_SERVO_PIN);
+  rightGateServo.attach(RIGHT_SERVO_PIN);
+  setGateAngle(OPEN_GATE_ANGLE);
+}
+
+void setupWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print('.');
+  }
+
+  Serial.println();
+  Serial.print("Connected. ESP32 IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void setup() {
+  Serial.begin(115200);
+  setupPinsAndServos();
+  updateLedIndicators();
+  setupWiFi();
+  setupWebSocket();
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send_P(200, "text/html", index_html);
+  });
+  server.begin();
+  Serial.println("HTTP and WebSocket servers started");
+}
+
+void loop() {
+  const unsigned long now = millis();
+  if (now - lastSensorUpdate < TELEMETRY_INTERVAL_MS) {
+    webSocket.cleanupClients();
+    return;
+  }
+
+  lastSensorUpdate = now;
+  readSensors();
+  calculateRisk();
+  updateLedIndicators();
+  updateServoGates();
+  sendTelemetry();
+  webSocket.cleanupClients();
+}
